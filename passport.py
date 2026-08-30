@@ -7,14 +7,9 @@ from aiohttp import web
 from curl_cffi import requests as async_requests
 
 TG_TOKEN = "8821212478:AAE1JD6RXTrnm45xtBhigZgKVfZZBZtf01I"
-# Прямой URL страницы записи
-URL = "https://munich.pasport.org.ua/solutions/e-queue"
+URL_PAGE = "https://munich.pasport.org.ua/solutions/e-queue"
+URL_API = "https://munich.pasport.org.ua/api/qms/services/1/dates"  # AJAX-эндпоинт для паспорта
 CHECK_INTERVAL = 60
-
-# Текст, который появляется, если после выбора услуги мест НЕТ
-NO_SLOTS_TEXT = "Вибачте, на даний момент всі місця зайняті!"
-# Маркер успешного ответа сайта
-VALID_MARKER = "Електронна черга"
 
 bot = Bot(token=TG_TOKEN)
 dp = Dispatcher()
@@ -55,8 +50,8 @@ def get_all_users():
 async def start_cmd(message: types.Message):
     add_user(message.from_user.id)
     await message.answer(
-        "👋 **Привет!** Вы подписались на мониторинг свободных слотов в Мюнхене.\n\n"
-        "Я запрашиваю наличие мест с выбранной услугой и пришлю уведомление, как только откроется запись!"
+        "👋 **Привет!** Вы подписаны на мониторинг слотов (Паспорт/ID) в Мюнхене.\n\n"
+        "Бот проверяет наличие свободных дат напрямую через API услуги."
     )
 
 
@@ -69,48 +64,55 @@ async def notify_all_users(text: str):
             )
             await asyncio.sleep(0.05)
         except Exception as e:
-            print(f"Ошибка отправки пользователю {user_id}: {e}")
+            print(f"Ошибка отправки {user_id}: {e}")
 
 
-# --- ПРОВЕРКА НАЛИЧИЯ МЕСТ ---
+# --- ПРОВЕРКА СЛОТОВ ---
 async def check_website_loop():
     while True:
         try:
             session = async_requests.Session(impersonate="chrome120")
 
-            # 1. Запрашиваем страницу
-            response = session.get(URL, timeout=15)
-            html = response.text
+            # 1. Загружаем токен и сессионные куки
+            res_page = session.get(URL_PAGE, timeout=15)
 
-            # 2. Проверяем, что ответ не заблокирован Cloudflare
-            if VALID_MARKER not in html:
-                print("Сайт временно выдал защиту Cloudflare. Пропускаем...")
-            else:
-                # 3. Если плашка с текстом "все места заняты" отсутствует в HTML — значит слоты доступны
-                if NO_SLOTS_TEXT not in html:
+            # 2. Делаем прямой AJAX запрос с выбором услуги
+            headers = {
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": URL_PAGE,
+            }
+            res_api = session.get(URL_API, headers=headers, timeout=15)
+
+            # Проверяем ответ: если пришел список дат, а не пустой массив/ошибка
+            if res_api.status_code == 200:
+                data_str = res_api.text
+                if (
+                    "[]" not in data_str
+                    and "null" not in data_str
+                    and len(data_str) > 10
+                ):
                     msg = (
-                        f"🚨 <b>ПОЯВИЛИСЬ СВОБОДНЫЕ МЕСТА!</b> 🚨\n\n"
-                        f"Форма с выбором даты и времени доступна!\n"
-                        f"Срочно переходите и регистрируйтесь: {URL}"
+                        f"🚨 <b>ПОЯВИЛИСЬ СВОБОДНЫЕ СЛОТЫ!</b> 🚨\n\n"
+                        f"Открылась запись на Паспорт / ID-карту!\n"
+                        f"Срочно заходите: {URL_PAGE}"
                     )
-                    print(
-                        "МЕСТА НАЙДЕНЫ! Отправляем уведомления подписчикам..."
-                    )
+                    print("СЛОТЫ НАЙДЕНЫ! Отправка уведомлений...")
                     await notify_all_users(msg)
-                    # Пауза 5 минут после обнаружения, чтобы не спамить
                     await asyncio.sleep(300)
                 else:
-                    print("Проверка выполнена: мест для записи нет.")
+                    print("Проверка выполнена: доступных дат нет.")
+            else:
+                print(f"Защита Cloudflare или ошибка API: {res_api.status_code}")
 
         except Exception as e:
-            print(f"Ошибка запроса к сайту: {e}")
+            print(f"Ошибка соединения: {e}")
 
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-# --- ФЕЙКОВЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+# --- ФИКТИВНЫЙ СЕРВЕР ДЛЯ УДОВЛЕТВОРЕНИЯ RENDER ---
 async def handle_ping(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="OK")
 
 
 async def start_dummy_server():
@@ -123,7 +125,6 @@ async def start_dummy_server():
     await site.start()
 
 
-# --- ГЛАВНЫЙ ЗАПУСК ---
 async def main():
     init_db()
     await start_dummy_server()
