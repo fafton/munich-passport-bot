@@ -7,9 +7,14 @@ from aiohttp import web
 from curl_cffi import requests as async_requests
 
 TG_TOKEN = "8821212478:AAE1JD6RXTrnm45xtBhigZgKVfZZBZtf01I"
+# Прямой URL страницы записи
 URL = "https://munich.pasport.org.ua/solutions/e-queue"
 CHECK_INTERVAL = 60
-BLOCK_TEXT = "Вибачте, на даний момент всі місця зайняті!"
+
+# Текст, который появляется, если после выбора услуги мест НЕТ
+NO_SLOTS_TEXT = "Вибачте, на даний момент всі місця зайняті!"
+# Маркер успешного ответа сайта
+VALID_MARKER = "Електронна черга"
 
 bot = Bot(token=TG_TOKEN)
 dp = Dispatcher()
@@ -50,8 +55,8 @@ def get_all_users():
 async def start_cmd(message: types.Message):
     add_user(message.from_user.id)
     await message.answer(
-        "👋 **Привет!** Вы успешно подписались на мониторинг очереди в Мюнхене.\n\n"
-        "Как только слоты откроются, я сразу отправлю вам уведомление."
+        "👋 **Привет!** Вы подписались на мониторинг свободных слотов в Мюнхене.\n\n"
+        "Я запрашиваю наличие мест с выбранной услугой и пришлю уведомление, как только откроется запись!"
     )
 
 
@@ -64,32 +69,41 @@ async def notify_all_users(text: str):
             )
             await asyncio.sleep(0.05)
         except Exception as e:
-            print(
-                f"Не удалось отправить сообщение пользователю {user_id}: {e}"
-            )
+            print(f"Ошибка отправки пользователю {user_id}: {e}")
 
 
-# --- ПРОВЕРКА САЙТА ---
+# --- ПРОВЕРКА НАЛИЧИЯ МЕСТ ---
 async def check_website_loop():
     while True:
         try:
             session = async_requests.Session(impersonate="chrome120")
-            response = session.get(URL, timeout=15)
 
-            if BLOCK_TEXT not in response.text:
-                msg = (
-                    f"🚨 <b>ПОЯВИЛИСЬ МЕСТА!</b> 🚨\n\n"
-                    f"Плашка с надписью о занятых местах исчезла!\n"
-                    f"Срочно переходите: {URL}"
-                )
-                print("Слоты найдены! Запускаем рассылку...")
-                await notify_all_users(msg)
-                await asyncio.sleep(300)
+            # 1. Запрашиваем страницу
+            response = session.get(URL, timeout=15)
+            html = response.text
+
+            # 2. Проверяем, что ответ не заблокирован Cloudflare
+            if VALID_MARKER not in html:
+                print("Сайт временно выдал защиту Cloudflare. Пропускаем...")
             else:
-                print("Мест нет, ожидаем...")
+                # 3. Если плашка с текстом "все места заняты" отсутствует в HTML — значит слоты доступны
+                if NO_SLOTS_TEXT not in html:
+                    msg = (
+                        f"🚨 <b>ПОЯВИЛИСЬ СВОБОДНЫЕ МЕСТА!</b> 🚨\n\n"
+                        f"Форма с выбором даты и времени доступна!\n"
+                        f"Срочно переходите и регистрируйтесь: {URL}"
+                    )
+                    print(
+                        "МЕСТА НАЙДЕНЫ! Отправляем уведомления подписчикам..."
+                    )
+                    await notify_all_users(msg)
+                    # Пауза 5 минут после обнаружения, чтобы не спамить
+                    await asyncio.sleep(300)
+                else:
+                    print("Проверка выполнена: мест для записи нет.")
 
         except Exception as e:
-            print(f"Ошибка проверки: {e}")
+            print(f"Ошибка запроса к сайту: {e}")
 
         await asyncio.sleep(CHECK_INTERVAL)
 
