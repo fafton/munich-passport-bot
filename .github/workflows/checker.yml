@@ -2,7 +2,7 @@ name: Passport Queue Checker
 
 on:
   schedule:
-    - cron: '*/9999999 * * * *'
+    - cron: '*/5 * * 8 *'
   workflow_dispatch:
 
 jobs:
