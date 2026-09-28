@@ -2,9 +2,8 @@ name: Passport Queue Checker
 
 on:
   schedule:
-    # Запуск каждые 5 минут
     - cron: '*/5 * * * *'
-  workflow_dispatch: # Позволяет запускать проверку вручную кнопкой
+  workflow_dispatch:
 
 jobs:
   check:
@@ -12,10 +11,10 @@ jobs:
 
     steps:
     - name: Скачивание репозитория
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Установка Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
