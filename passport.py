@@ -5,24 +5,28 @@ from playwright.async_api import async_playwright
 from telegram import Bot
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 USERS_FILE = "users.json"
 URL = "https://munich.pasport.org.ua/solutions/e-queue"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
 
-# Функция для загрузки списка ID пользователей
 def load_users():
+    users = set()
+    if CHAT_ID:
+        users.add(int(CHAT_ID))
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r") as f:
-                return set(json.load(f))
+                data = json.load(f)
+                for u in data:
+                    users.add(int(u))
         except Exception:
-            return set()
-    return set()
+            pass
+    return users
 
 
-# Функция для проверки страницы
 async def check_queue():
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -35,13 +39,47 @@ async def check_queue():
         page = await context.new_page()
 
         try:
+            # 1. Переходим на страницу записи
             await page.goto(URL, wait_until="networkidle", timeout=60000)
-            content = await page.content()
+            await page.wait_for_timeout(3000)
 
-            # Если фраза об отсутствии мест пропала — места появились
-            if "Наразі всі місця зайняті" not in content:
+            # 2. Нажимаем на выбор услуги (выпадающее меню или карточку)
+            # Пытаемся кликнуть по элементу с текстом "Закордонний" или открывающему меню
+            try:
+                # Нажимаем на селект/меню выбора услуги, если оно есть
+                select_element = page.locator("text=Оберіть послугу").or_(
+                    page.locator("text=Виберіть послугу")
+                )
+                if await select_element.count() > 0:
+                    await select_element.first.click()
+                    await page.wait_for_timeout(1000)
+
+                # Нажимаем на саму услугу "Закордонний паспорт"
+                passport_option = page.locator(
+                    "text=/Закордонний/i"
+                ).or_(
+                    page.locator("text=/паспорт для виїзду/i")
+                )
+                if await passport_option.count() > 0:
+                    await passport_option.first.click()
+                    print("[+] Выбрана услуга оформления загранпаспорта.")
+            except Exception as select_err:
+                print(f"[!] Не удалось кликнуть по меню, проверяем текущее состояние: {select_err}")
+
+            # 3. Ждем 4 секунды подгрузку ответа о наличии мест
+            await page.wait_for_timeout(4000)
+
+            # 4. Считываем видимый текст страницы
+            text = await page.inner_text("body")
+
+            # Проверяем, есть ли фраза про отсутствие мест
+            if "Наразі всі місця зайняті" not in text and "вибачте" not in text.lower():
+                print("[+] Места появились!")
                 return True
-            return False
+            else:
+                print("[-] Мест нет (выдает сообщение о том, что все места заняты).")
+                return False
+
         except Exception as e:
             print(f"Ошибка при проверке страницы: {e}")
             return False
@@ -49,38 +87,26 @@ async def check_queue():
             await browser.close()
 
 
-# Главная функция рассылки
 async def main():
     users = load_users()
-
-    # Также можно добавить свой CHAT_ID из секретов по умолчанию, если список пуст
-    default_chat_id = os.getenv("CHAT_ID")
-    if default_chat_id:
-        users.add(int(default_chat_id))
-
     if not users:
-        print("Список подписчиков пуст. Рассылка не требуется.")
+        print("Нет пользователей для отправки.")
         return
 
     has_slots = await check_queue()
 
     if has_slots:
         message = (
-            f"🚨 **Появились свободные места в очереди!**\n\nБыстрее переходи по ссылке:\n{URL}"
+            f"🚨 **Появились свободные места на Загранпаспорт!**\n\nБыстрее переходи по ссылке:\n{URL}"
         )
-        print(f"Места найдены! Отправка уведомления {len(users)} пользователям...")
-
-        # Рассылка всем сохраненным пользователям
         for user_id in users:
             try:
                 await bot.send_message(
                     chat_id=user_id, text=message, parse_mode="Markdown"
                 )
-                print(f"[+] Сообщение отправлено пользователью: {user_id}")
+                print(f"Уведомление отправлено: {user_id}")
             except Exception as e:
-                print(f"[!] Не удалось отправить пользователю {user_id}: {e}")
-    else:
-        print("Мест нет. Проверка завершена.")
+                print(f"Ошибка отправки {user_id}: {e}")
 
 
 if __name__ == "__main__":
